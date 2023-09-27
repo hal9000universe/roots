@@ -4,10 +4,10 @@ import torchvision
 import torchvision.transforms as transforms
 from torch.utils.data import DataLoader
 
-from typing import Optional, List, Callable, Iterable
+from typing import Optional, List, Callable, Iterable, Tuple, Union, Dict
 
 
-def reshape(x: torch.Tensor) -> "Array":
+def reshape(x: torch.Tensor) -> torch.Tensor:
     """Reshape the input tensor to Array of shape (-1, 784).
 
     Args:
@@ -16,7 +16,20 @@ def reshape(x: torch.Tensor) -> "Array":
     Returns:
         Reshaped Array.
     """
-    return Array(x.view(-1, 784))
+    return x.view(-1, 32 * 32)
+
+
+def array_transform(x: torch.Tensor, y: torch.Tensor) -> Tuple["Array", "Array"]:
+    """Transform the input tensor to (-1, 784)
+
+    Args:
+        x: Input tensor.
+        y: Label tensor.
+
+    Returns:
+        Reshaped tensors.
+    """
+    return Array(reshape(x)), Array(y)
 
 
 def one_hot(x: torch.Tensor) -> "Array":
@@ -31,19 +44,6 @@ def one_hot(x: torch.Tensor) -> "Array":
     return Array(torch.nn.functional.one_hot(x, num_classes=10))
 
 
-def array_transform(x: torch.Tensor, y: torch.Tensor) -> ("Array", "Array"):
-    """Transform the input tensor to (-1, 784)
-
-    Args:
-        x: Input tensor.
-        y: Label tensor.
-
-    Returns:
-        Reshaped tensors.
-    """
-    return reshape(x), Array(y)
-
-
 def load_data(batch_size: int) -> (DataLoader, DataLoader):
     """Load MNIST data.
 
@@ -56,12 +56,13 @@ def load_data(batch_size: int) -> (DataLoader, DataLoader):
     # define transform
     transform = transforms.Compose([
         transforms.ToTensor(),
+        transforms.Grayscale(),
         transforms.Normalize([0.5], [0.5]),
     ])
 
     # download data
-    train_dataset = torchvision.datasets.MNIST(root='./data', train=True, transform=transform, download=True)
-    test_dataset = torchvision.datasets.MNIST(root='./data', train=False, transform=transform, download=True)
+    train_dataset = torchvision.datasets.CIFAR10(root='./data', train=True, transform=transform, download=True)
+    test_dataset = torchvision.datasets.CIFAR10(root='./data', train=False, transform=transform, download=True)
 
     # load data
     train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
@@ -198,6 +199,8 @@ class ReLU(Operation):
 
 class CrossEntropyLoss(Operation):
     """Cross entropy loss."""
+    _y_true: Optional["Array"]
+
     def __init__(self, y_true: Optional["Array"] = None):
         """Initialize cross entropy loss."""
         self._y_true = y_true
@@ -273,10 +276,22 @@ def relu(x: Array) -> Array:
 
 
 def cross_entropy_loss(y_pred: Array, y_true: Array) -> Array:
-    return CrossEntropyLoss(y_true)(y_pred, y_true)
+    return CrossEntropyLoss(y_true)(y_pred, y_true)  # - ln(1 / K)
 
 
-class Linear:
+class Module:
+    """Base class for modules."""
+
+    def parameters(self) -> Union[Iterable[Array], Array]:
+        """Get parameters."""
+        raise NotImplementedError
+
+    def __call__(self, *args: Array) -> Array:
+        """Forward pass."""
+        raise NotImplementedError
+
+
+class Linear(Module):
     """Linear layer."""
     _weights: Array
 
@@ -308,7 +323,7 @@ class Linear:
         return x @ self._weights
 
 
-class Sequential:
+class Sequential(Module):
     """Sequential model."""
     _layers: Iterable[Callable[[Array], Array]]
 
@@ -340,46 +355,107 @@ class Sequential:
         return x
 
 
-def zero_grad(model: Sequential) -> None:
-    """Zero gradients."""
-    for param in model.parameters():
-        param.zero_grad()
+class Optimizer:
+    """Base class for optimizers."""
+    model: Module
+    lr: float
+
+    def __init__(self, model: Module, lr: float = 0.01):
+        self.model = model
+        self.lr = lr
+
+    def zero_grad(self):
+        """Zero gradients."""
+        for param in self.model.parameters():
+            param.zero_grad()
+
+    def step(self):
+        """Update parameters."""
+        raise NotImplementedError
+
+
+class SGD(Optimizer):
+    """Stochastic gradient descent optimizer."""
+
+    def step(self):
+        for param in self.model.parameters():
+            param.data -= self.lr * param.grad
+
+
+class Adam(Optimizer):
+    """Adaptive Moment Estimation."""
+    beta1: float
+    beta2: float
+    m: Dict[Array, torch.Tensor]
+    v: Dict[Array, torch.Tensor]
+
+    def __init__(self, model: Module, lr: float = 0.01, beta1: float = 0.9, beta2: float = 0.999):
+        super().__init__(model, lr)
+        self.beta1 = beta1
+        self.beta2 = beta2
+        self.m = {}
+        self.v = {}
+        for param in self.model.parameters():
+            self.m[param] = torch.zeros_like(param.data)
+            self.v[param] = torch.zeros_like(param.data)
+
+    def step(self):
+        for param in self.model.parameters():
+            self.m[param] = self.beta1 * self.m[param] + (1 - self.beta1) * param.grad
+            self.v[param] = self.beta2 * self.v[param] + (1 - self.beta2) * param.grad ** 2
+            m_hat = self.m[param] / (1 - self.beta1)
+            v_hat = self.v[param] / (1 - self.beta2)
+            param.data -= self.lr * m_hat / (torch.sqrt(v_hat) + 1e-8)
 
 
 def train():
     # define model
     mlp = Sequential([
-        Linear(784, 512),
+        Linear(1024, 2048),
+        relu,
+        Linear(2048, 1024),
+        relu,
+        Linear(1024, 512),
+        relu,
+        Linear(512, 512),
         relu,
         Linear(512, 256),
         relu,
         Linear(256, 128),
         relu,
-        Linear(128, 10),
+        Linear(128, 64),
+        relu,
+        Linear(64, 10),
     ])
     # define optimizer
     lr = 0.001
+    optimizer = Adam(model=mlp, lr=lr)
     # load data
     train_loader, test_loader = load_data(64)
 
     # define loss function
     loss_fn = cross_entropy_loss
 
-    # train
+    # training loop
     num_steps = 0
-    for epoch in range(10):
+    for epoch in range(100):
         for x, y in train_loader:
+            # prepare data
             x, y = array_transform(x, y)
+            # forward pass
             y_pred = mlp(x)
+            # compute loss
             loss = loss_fn(y_pred, y)
-            zero_grad(mlp)
+            # zero gradients
+            optimizer.zero_grad()
+            # backward pass
             loss.backward()
-            for param in mlp.parameters():
-                param.data -= lr * param.grad
+            # update parameters
+            optimizer.step()
 
-            num_steps += x.data.shape[0]
             if num_steps % 1000 == 0:
                 print(f'epoch: {epoch}, num_steps: {num_steps}, loss: {loss.data.item()}')
+            num_steps += x.data.shape[0]
 
     # test
     num_correct = 0
@@ -390,3 +466,19 @@ def train():
         num_correct += (y_pred.data.argmax(dim=1) == y.data).sum()
         num_examples += x.data.shape[0]
     print(f'accuracy: {num_correct / num_examples}')
+
+
+# MNIST
+# sgd, 5 epochs, lr=0.001, accuracy=0.97
+# adam, 5 epochs, lr=0.001, accuracy=0.97
+
+# sgd, 10 epochs, lr=0.001, accuracy=0.98
+# adam, 10 epochs, lr=0.001, accuracy=0.976
+
+
+# CIFAR10
+# sgd, 10 epochs, lr=0.001, accuracy=0.426
+# adam, 10 epochs, lr=0.001, accuracy=0.44
+
+# bigger model, adam, 100 epochs, lr=0.001, accuracy=0.44
+
