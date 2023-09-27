@@ -1,3 +1,4 @@
+import math
 import torch
 import torchvision
 import torchvision.transforms as transforms
@@ -7,13 +8,13 @@ from typing import Optional, List, Callable, Iterable
 
 
 def reshape(x: torch.Tensor) -> "Array":
-    """Reshape the input tensor to (-1, 784)
+    """Reshape the input tensor to Array of shape (-1, 784).
 
     Args:
         x: Input tensor.
 
     Returns:
-        Reshaped tensor.
+        Reshaped Array.
     """
     return Array(x.view(-1, 784))
 
@@ -25,7 +26,7 @@ def one_hot(x: torch.Tensor) -> "Array":
         x: Input tensor.
 
     Returns:
-        One-hot encoded tensor.
+        One-hot encoded Array.
     """
     return Array(torch.nn.functional.one_hot(x, num_classes=10))
 
@@ -43,7 +44,7 @@ def array_transform(x: torch.Tensor, y: torch.Tensor) -> ("Array", "Array"):
     return reshape(x), Array(y)
 
 
-def load_data(batch_size: int):
+def load_data(batch_size: int) -> (DataLoader, DataLoader):
     """Load MNIST data.
 
     Args:
@@ -205,8 +206,8 @@ class CrossEntropyLoss(Operation):
         """Forward pass.
 
         Args:
-            y_pred: Predicted labels.
-            y_true: True labels.
+            y_pred: Predicted labels. (batch_size, num_classes)
+            y_true: True labels. (batch_size)
 
         Returns:
             Loss.
@@ -222,7 +223,7 @@ class CrossEntropyLoss(Operation):
         # initialize gradients if they are None
         if out.prev[0].grad is None:
             out.prev[0].grad = torch.zeros_like(out.prev[0].data)
-        # compute gradients
+        # compute gradients according to s - y, where s is the softmax output and y is the true distribution
         y_true = one_hot(self._y_true.data)
         out.prev[0].grad += (torch.nn.functional.softmax(out.prev[0].data, dim=1) - y_true.data) * out.grad
         # back-propagate gradients
@@ -235,17 +236,17 @@ class Array:
     data: torch.Tensor
     grad: Optional[torch.Tensor]
 
-    def __init__(self, data: torch.Tensor, op: Optional[Operation] = None):
+    def __init__(self, data: torch.Tensor, operation: Optional[Operation] = None):
         """Initialize array.
 
         Args:
             data: Data.
-            op: Operation.
+            operation: Operation.
         """
         self.data = data
         self.grad = None
         self.prev: List["Array"] = []
-        self.op: Optional[Operation] = op
+        self.op: Optional[Operation] = operation
 
     def backward(self) -> None:
         """Backward pass."""
@@ -286,7 +287,10 @@ class Linear:
             in_features: Number of input features.
             out_features: Number of output features.
         """
-        self._weights = Array(torch.randn(in_features, out_features, requires_grad=False) / 20.)
+        # initialize weights
+        # see: https://www.deeplearning.ai/ai-notes/initialization/index.html
+        # He initialization
+        self._weights = Array(torch.randn(in_features, out_features, requires_grad=False) * math.sqrt(2 / in_features))
 
     def parameters(self) -> Array:
         """Get parameters."""
@@ -344,7 +348,6 @@ def zero_grad(model: Sequential) -> None:
 
 def train():
     # define model
-    lr = 0.001
     mlp = Sequential([
         Linear(784, 512),
         relu,
@@ -354,6 +357,8 @@ def train():
         relu,
         Linear(128, 10),
     ])
+    # define optimizer
+    lr = 0.001
     # load data
     train_loader, test_loader = load_data(64)
 
